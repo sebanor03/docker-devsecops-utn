@@ -1,0 +1,7 @@
+title = "Regla educativa de secretos ficticios"
+
+[[rules]]
+id = "demo-only-secret"
+description = "Detecta exclusivamente el marcador ficticio de este ejercicio"
+regex = '''DEMO-ONLY-NOT-A-CREDENTIAL-[A-Z0-9]+'''
+keywords = ["DEMO-ONLY-NOT-A-CREDENTIAL"]

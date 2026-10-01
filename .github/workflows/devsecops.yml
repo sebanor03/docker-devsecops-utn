@@ -1,0 +1,102 @@
+name: DevSecOps - hardened version
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  secure-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Scan only the hardened candidate. The insecure variant remains an educational comparison.
+      - name: Gitleaks - secret scanning
+        run: docker run --rm -v "$PWD:/src" -w /src ghcr.io/gitleaks/gitleaks:v8.30.1 dir --config .gitleaks.toml secure
+
+      - name: Bandit - SAST
+        run: docker run --rm -v "$PWD:/src" -w /src python:3.12.14-slim sh -c 'pip install --quiet --no-cache-dir bandit==1.9.4 && bandit -f txt secure/app.py'
+
+      - name: pip-audit - SCA
+        run: docker run --rm -v "$PWD:/src" -w /src python:3.12.14-slim sh -c 'pip install --quiet --no-cache-dir pip-audit==2.10.1 && pip-audit -r secure/requirements.txt'
+
+      # DL3066 is informational; warnings and errors still fail this step.
+      - name: Hadolint - Dockerfile
+        run: docker run --rm -v "$PWD:/work" hadolint/hadolint:v2.15.1 hadolint --failure-threshold warning /work/secure/Dockerfile
+
+      - name: Docker Build - secure image
+        run: docker build -f secure/Dockerfile -t docker-devsecops:secure .
+
+      # Keep CRITICAL and HIGH visible. This report step does not block on findings.
+      - name: Trivy - report CRITICAL and HIGH
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v devsecops-trivy-cache:/root/.cache/trivy aquasec/trivy:0.74.0 image --scanners vuln --severity CRITICAL,HIGH --format table docker-devsecops:secure
+
+      # Policy: block CRITICAL only. The recorded scan has 0 CRITICAL and 51 HIGH.
+      # Passing means this image meets this academic threshold, not that it is vulnerability-free.
+      - name: Trivy - block CRITICAL
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v devsecops-trivy-cache:/root/.cache/trivy aquasec/trivy:0.74.0 image --scanners vuln --severity CRITICAL --exit-code 1 --format table docker-devsecops:secure
+
+      - name: Functional endpoint checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          container="devsecops-secure-functional-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run -d --name "$container" \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            --tmpfs /tmp \
+            -p 127.0.0.1:5001:5000 \
+            docker-devsecops:secure
+
+          ready=0
+          for attempt in {1..20}; do
+            if curl --fail --silent http://localhost:5001/health >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" -eq 1
+
+          curl --fail --silent --show-error http://localhost:5001/ | grep -Fq '"aplicacion":"Docker DevSecOps Demo"'
+          curl --fail --silent --show-error http://localhost:5001/health | grep -Fq '"status":"OK"'
+
+      - name: Runtime hardening checks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          container="devsecops-secure-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run -d --name "$container" \
+            --read-only \
+            --cap-drop=ALL \
+            --security-opt=no-new-privileges:true \
+            --tmpfs /tmp \
+            docker-devsecops:secure
+
+          test "$(docker exec "$container" whoami)" = "appuser"
+
+          if rootfs_output="$(docker exec "$container" sh -c 'touch /app/ci-rootfs-test' 2>&1)"; then
+            echo "ERROR: /app accepted a write on a read-only root filesystem." >&2
+            exit 1
+          fi
+          printf '%s\n' "$rootfs_output"
+          grep -Fq "Read-only file system" <<<"$rootfs_output"
+
+          docker exec "$container" sh -c 'touch /tmp/ci-tmp-test'
