@@ -6,7 +6,6 @@
 - Entorno: Windows, PowerShell; Docker Engine 29.7.2; imágenes Linux/amd64.
 - Imágenes inspeccionadas: `docker-devsecops:insecure` y `docker-devsecops:secure`; no se reconstruyeron.
 - La aplicación no se modificó. Los hallazgos se registran para revisión posterior.
-- `git status --short`: no disponible; la carpeta de trabajo no contiene un repositorio Git (`fatal: not a git repository`). No se hizo commit.
 
 ## Versiones verificadas
 
@@ -97,12 +96,27 @@ Se revisaron los informes existentes `reports/zap-report.json` y `reports/zap-re
 
 En estos informes no se observó una vulnerabilidad explotable de la lógica de la aplicación (categoría a). Cinco alertas son recomendaciones de cabeceras HTTP; la sexta es informativa y debe leerse considerando que `/` expone datos genéricos de la demo. No se modificó la aplicación para suprimirlas.
 
+## Validación CI/CD en GitHub Actions
+
+- Repositorio: <https://github.com/sebanor03/docker-devsecops-utn>
+- Rama: `main`
+- Workflow: `DevSecOps - hardened version`
+- Trigger probado: `push` a `main`
+- Ejecución: Run #1, asociada al commit `Initial Docker DevSecOps practical case`
+- Resultado: **SUCCESS**
+
+Todas las etapas finalizaron correctamente: Checkout; Gitleaks (secret scanning); Bandit (SAST); pip-audit (SCA); Hadolint (Dockerfile); Docker Build de la imagen secure; Trivy (reporte de CRITICAL y HIGH); Trivy (gate de CRITICAL); comprobaciones funcionales de endpoints; y comprobaciones de hardening runtime.
+
+El pipeline evalúa la versión secure/endurecida. La variante insecure se conserva únicamente como comparación educativa. Un pipeline exitoso confirma el cumplimiento de la política definida, no la ausencia total de vulnerabilidades: la política actual de Trivy bloquea vulnerabilidades CRITICAL, mientras que los hallazgos HIGH permanecen visibles en el reporte y no bloquean este pipeline académico. La ejecución real confirmó 0 vulnerabilidades CRITICAL en el gate de Trivy.
+
+Las comprobaciones funcionales verificaron los endpoints de la aplicación. Las pruebas runtime verificaron el usuario `appuser`, el sistema de archivos raíz de solo lectura (`ReadonlyRootfs=true`) y la escritura permitida en `/tmp` mediante tmpfs. Esta ejecución demuestra la automatización del enfoque Shift-Left dentro del proceso CI/CD.
+
 ## Limitaciones y notas
 
 - Los resultados describen el estado de estas imágenes y bases de avisos durante la ejecución; las bases y las etiquetas de escáner `latest` cambian con el tiempo.
 - Los recuentos Trivy cubren vulnerabilidades del sistema Debian y paquetes Python detectados; no equivalen a una prueba de explotabilidad.
 - ZAP corresponde al informe del 2026-09-29, no a un nuevo DAST del 2026-10-01. El análisis Baseline pasivo tampoco prueba ausencia de fallas.
 - La regla Bandit `B104` se suprime en secure porque el servidor Flask debe enlazarse a la interfaz del contenedor; la supresión continúa apareciendo en el resumen de Bandit.
-- No se comprobó publicación remota, CI en GitHub ni un digest de registro remoto. Las imágenes fueron inspeccionadas localmente y sus RepoDigest se registran exactamente como los mostró Docker.
-- Esta carpeta no es un repositorio Git, por lo que no se pudo obtener un `git status --short` real ni presentar cambios como commit.
+- Existen hallazgos HIGH, MEDIUM y LOW en la imagen secure; el pipeline verde solo significa que se cumplió la política configurada, que actualmente bloquea CRITICAL.
+- La validación de GitHub Actions acredita la ejecución del workflow en el repositorio remoto; no implica publicación de las imágenes en un registro remoto. Las imágenes de esta auditoría fueron inspeccionadas localmente y sus RepoDigest se registran exactamente como los mostró Docker.
 - Los informes Trivy actuales están en `reports/`; ZAP conserva los informes ya existentes en esa carpeta.
